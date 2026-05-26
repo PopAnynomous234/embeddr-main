@@ -13,3 +13,5 @@ Just add
 replacing `https://yoururl.tld` with your actual url and you're good to go
 
 -# P.S you can also go to [the main page](https://embeddr.rhw.one) to generate your Embeddr url with ease!
+
+Made for firebase
