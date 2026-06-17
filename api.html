@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+</head>
+<body>
+    <script src="uv/uv.bundle.js"></script>
+    <script src="uv/uv.config.js"></script>
+    <script type="module">
+        import { registerSW } from "/prxy/register-sw.mjs";
+        import * as BareMux from "/prxy/baremux/index.mjs";
+
+        const connection = new BareMux.BareMuxConnection("/prxy/baremux/worker.js");
+
+        async function handleApiRequest() {
+            // Get target URL from hash (e.g., api.html#https://example.com/api)
+            const targetUrl = window.location.hash.substring(1);
+            if (!targetUrl) return;
+
+            try {
+                await registerSW();
+                
+                let wispUrl = "wss://galxy.it.com/wisp/";
+                if ((await connection.getTransport()) !== "/prxy/epoxy/index.mjs") {
+                    await connection.setTransport("/prxy/epoxy/index.mjs", [{ wisp: wispUrl }]);
+                }
+
+                const proxiedUrl = __uv$config.prefix + __uv$config.encodeUrl(targetUrl);
+                const res = await fetch(proxiedUrl);
+                const json = await res.json();
+
+                // Clear out everything and replace the window content with literal JSON text
+                document.body.textContent = JSON.stringify(json);
+            } catch (err) {
+                document.body.textContent = JSON.stringify({ error: err.message });
+            }
+        }
+
+        window.addEventListener('load', handleApiRequest);
+    </script>
+</body>
+</html>
