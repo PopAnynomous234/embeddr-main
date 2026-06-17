@@ -8,6 +8,17 @@
       "**/node_modules/**",
       "render.yaml",
       "README.md"
+    ],
+    "headers": [
+      {
+        "source": "/**",
+        "headers": [
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          }
+        ]
+      }
     ]
   }
 }
