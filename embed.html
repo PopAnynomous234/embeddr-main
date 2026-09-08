@@ -34,69 +34,121 @@
     <!-- UV Dependencies -->
     <script src="uv/uv.bundle.js"></script>
     <script src="uv/uv.config.js"></script>
-    <script>
-      // Ensure UV Service Worker is registered
-      async function initUV() {
-        if ("serviceWorker" in navigator) {
-          return navigator.serviceWorker.register(__uv$config.sw, {
-            scope: __uv$config.prefix
-          });
+    <script type="module">
+        import { registerSW } from "/prxy/register-sw.mjs";
+        import * as BareMux from "/prxy/baremux/index.mjs";
+
+        const connection = new BareMux.BareMuxConnection("/prxy/baremux/worker.js");
+
+        function search(input, template = "https://html.duckduckgo.com/html?t=h_&q=%s") {
+            try {
+                return new URL(input).toString();
+            } catch (err) {}
+
+            try {
+                const url = new URL(`http://${input}`);
+                if (url.hostname.includes(".")) return url.toString();
+            } catch (err) {}
+
+            return template.replace("%s", encodeURIComponent(input));
         }
-        throw new Error("Service Workers are not supported in this environment.");
-      }
 
-      window.addEventListener("message", async (event) => {
-        if (event.data?.type !== "START_LINK_CHECK") return;
+        async function getUV(input) {
+            await registerSW();
 
-        const { target, filters, requestId } = event.data;
-        const targetApi = `https://noc.exploits-bg.com/api/linkcheck/stream?url=${encodeURIComponent(target)}&filters=${encodeURIComponent(filters)}`;
+            let url = search(input);
+            let wispUrl = "wss://wisp.mercurywork.shop";
 
-        try {
-          // Register SW if not already active
-          await initUV();
-          await navigator.serviceWorker.ready;
+            if ((await connection.getTransport()) !== "/prxy/epoxy/index.mjs") {
+                await connection.setTransport("/prxy/epoxy/index.mjs", [
+                    { wisp: wispUrl },
+                ]);
+            }
 
-          // Route request through UV's prefix and encoder
-          const proxiedUrl = __uv$config.prefix + __uv$config.encodeUrl(targetApi);
-
-          const response = await fetch(proxiedUrl, {
-            headers: { Accept: "text/event-stream" },
-            cache: "no-store"
-          });
-
-          if (!response.ok || !response.body) {
-            event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: `Stream failed with status ${response.status}` }, event.origin);
-            return;
-          }
-
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          while (true) {
-            const chunk = await reader.read();
-            buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
-            const events = buffer.split("\n\n");
-            buffer = events.pop() || "";
-
-            events.forEach((evt) => {
-              const dataLine = evt.split("\n").find((line) => line.startsWith("data: "));
-              if (!dataLine) return;
-              try {
-                const data = JSON.parse(dataLine.slice(6));
-                event.source.postMessage({ type: "LINK_CHECK_RESULT", requestId, data }, event.origin);
-              } catch (_) {}
-            });
-
-            if (chunk.done) break;
-          }
-
-          event.source.postMessage({ type: "LINK_CHECK_DONE", requestId }, event.origin);
-
-        } catch (err) {
-          event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: err.message }, event.origin);
+            return __uv$config.prefix + __uv$config.encodeUrl(url);
         }
-      });
+
+        function getUrlFromQueryParam() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('url');
+        }
+
+        async function embedUrl() {
+            const url = getUrlFromQueryParam();
+            const iframe = document.getElementById('embed-frame');
+
+            if (!url) return;
+
+            try {
+                const proxiedUrl = await getUV(url);
+                iframe.src = proxiedUrl;
+                document.title = `Embeddr Embed: ${url}`;
+            } catch (error) {
+                console.error("Failed to load proxied site:", error);
+            }
+        }
+
+        // Initialize iframe embed if url query param exists
+        if (typeof __uv$config !== 'undefined') {
+            embedUrl();
+        } else {
+            const checkConfig = setInterval(() => {
+                if (typeof __uv$config !== 'undefined') {
+                    clearInterval(checkConfig);
+                    embedUrl();
+                }
+            }, 10);
+        }
+
+        // Link Checker SSE Bridge over BareMux/UV
+        window.addEventListener("message", async (event) => {
+            if (event.data?.type !== "START_LINK_CHECK") return;
+
+            const { target, filters, requestId } = event.data;
+            const targetApi = `https://noc.exploits-bg.com/api/linkcheck/stream?url=${encodeURIComponent(target)}&filters=${encodeURIComponent(filters)}`;
+
+            try {
+                // Initialize Service Worker & BareMux Epoxy transport
+                const proxiedUrl = await getUV(targetApi);
+
+                const response = await fetch(proxiedUrl, {
+                    headers: { Accept: "text/event-stream" },
+                    cache: "no-store"
+                });
+
+                if (!response.ok || !response.body) {
+                    event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: `Stream request failed (${response.status})` }, event.origin);
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const chunk = await reader.read();
+                    buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+                    const events = buffer.split("\n\n");
+                    buffer = events.pop() || "";
+
+                    events.forEach((evt) => {
+                        const dataLine = evt.split("\n").find((line) => line.startsWith("data: "));
+                        if (!dataLine) return;
+                        try {
+                            const data = JSON.parse(dataLine.slice(6));
+                            event.source.postMessage({ type: "LINK_CHECK_RESULT", requestId, data }, event.origin);
+                        } catch (_) {}
+                    });
+
+                    if (chunk.done) break;
+                }
+
+                event.source.postMessage({ type: "LINK_CHECK_DONE", requestId }, event.origin);
+
+            } catch (err) {
+                event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: err.message }, event.origin);
+            }
+        });
     </script>
 </body>
 </html>
