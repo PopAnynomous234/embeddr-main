@@ -34,71 +34,54 @@
     <!-- UV Dependencies -->
     <script src="uv/uv.bundle.js"></script>
     <script src="uv/uv.config.js"></script>
-    <script type="module">
-        import { registerSW } from "/prxy/register-sw.mjs";
-        import * as BareMux from "/prxy/baremux/index.mjs";
+<script>
+  window.addEventListener("message", async (event) => {
+    // Check if the message is a link check command
+    if (event.data?.type !== "START_LINK_CHECK") return;
 
-        const connection = new BareMux.BareMuxConnection("/prxy/baremux/worker.js");
+    const { target, filters, requestId } = event.data;
+    const apiUrl = `https://noc.exploits-bg.com/api/linkcheck/stream?url=${encodeURIComponent(target)}&filters=${encodeURIComponent(filters)}`;
 
-        function search(input, template = "https://html.duckduckgo.com/html?t=h_&q=%s") {
-            try {
-                return new URL(input).toString();
-            } catch (err) {}
+    try {
+      const response = await fetch(apiUrl, {
+        headers: { Accept: "text/event-stream" },
+        cache: "no-store"
+      });
 
-            try {
-                const url = new URL(`http://${input}`);
-                if (url.hostname.includes(".")) return url.toString();
-            } catch (err) {}
+      if (!response.ok || !response.body) {
+        event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: "Stream unavailable" }, event.origin);
+        return;
+      }
 
-            return template.replace("%s", encodeURIComponent(input));
-        }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-        async function getUV(input) {
-            await registerSW();
+      while (true) {
+        const chunk = await reader.read();
+        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
 
-            let url = search(input);
-            let wispUrl = "wss://wisp.mercurywork.shop";
+        events.forEach((evt) => {
+          const dataLine = evt.split("\n").find((line) => line.startsWith("data: "));
+          if (!dataLine) return;
+          try {
+            const data = JSON.parse(dataLine.slice(6));
+            // Send each parsed result back to localhost
+            event.source.postMessage({ type: "LINK_CHECK_RESULT", requestId, data }, event.origin);
+          } catch (_) {}
+        });
 
-            if ((await connection.getTransport()) !== "/prxy/epoxy/index.mjs") {
-                await connection.setTransport("/prxy/epoxy/index.mjs", [
-                    { wisp: wispUrl },
-                ]);
-            }
+        if (chunk.done) break;
+      }
 
-            return __uv$config.prefix + __uv$config.encodeUrl(url);
-        }
+      event.source.postMessage({ type: "LINK_CHECK_DONE", requestId }, event.origin);
 
-        function getUrlFromQueryParam() {
-            const params = new URLSearchParams(window.location.search);
-            return params.get('url');
-        }
-
-        async function embedUrl() {
-            const url = getUrlFromQueryParam();
-            const iframe = document.getElementById('embed-frame');
-
-            if (!url) return;
-
-            try {
-                const proxiedUrl = await getUV(url);
-                iframe.src = proxiedUrl;
-                document.title = `Embeddr Embed: ${url}`;
-            } catch (error) {
-                console.error("Failed to load proxied site:", error);
-            }
-        }
-
-        // Initialize immediately
-        if (typeof __uv$config !== 'undefined') {
-            embedUrl();
-        } else {
-            const checkConfig = setInterval(() => {
-                if (typeof __uv$config !== 'undefined') {
-                    clearInterval(checkConfig);
-                    embedUrl();
-                }
-            }, 10);
-        }
-    </script>
+    } catch (err) {
+      event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: err.message }, event.origin);
+    }
+  });
+</script>
 </body>
 </html>
