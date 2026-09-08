@@ -34,54 +34,69 @@
     <!-- UV Dependencies -->
     <script src="uv/uv.bundle.js"></script>
     <script src="uv/uv.config.js"></script>
-<script>
-  window.addEventListener("message", async (event) => {
-    // Check if the message is a link check command
-    if (event.data?.type !== "START_LINK_CHECK") return;
+    <script>
+      // Ensure UV Service Worker is registered
+      async function initUV() {
+        if ("serviceWorker" in navigator) {
+          return navigator.serviceWorker.register(__uv$config.sw, {
+            scope: __uv$config.prefix
+          });
+        }
+        throw new Error("Service Workers are not supported in this environment.");
+      }
 
-    const { target, filters, requestId } = event.data;
-    const apiUrl = `https://noc.exploits-bg.com/api/linkcheck/stream?url=${encodeURIComponent(target)}&filters=${encodeURIComponent(filters)}`;
+      window.addEventListener("message", async (event) => {
+        if (event.data?.type !== "START_LINK_CHECK") return;
 
-    try {
-      const response = await fetch(apiUrl, {
-        headers: { Accept: "text/event-stream" },
-        cache: "no-store"
+        const { target, filters, requestId } = event.data;
+        const targetApi = `https://noc.exploits-bg.com/api/linkcheck/stream?url=${encodeURIComponent(target)}&filters=${encodeURIComponent(filters)}`;
+
+        try {
+          // Register SW if not already active
+          await initUV();
+          await navigator.serviceWorker.ready;
+
+          // Route request through UV's prefix and encoder
+          const proxiedUrl = __uv$config.prefix + __uv$config.encodeUrl(targetApi);
+
+          const response = await fetch(proxiedUrl, {
+            headers: { Accept: "text/event-stream" },
+            cache: "no-store"
+          });
+
+          if (!response.ok || !response.body) {
+            event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: `Stream failed with status ${response.status}` }, event.origin);
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const chunk = await reader.read();
+            buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+
+            events.forEach((evt) => {
+              const dataLine = evt.split("\n").find((line) => line.startsWith("data: "));
+              if (!dataLine) return;
+              try {
+                const data = JSON.parse(dataLine.slice(6));
+                event.source.postMessage({ type: "LINK_CHECK_RESULT", requestId, data }, event.origin);
+              } catch (_) {}
+            });
+
+            if (chunk.done) break;
+          }
+
+          event.source.postMessage({ type: "LINK_CHECK_DONE", requestId }, event.origin);
+
+        } catch (err) {
+          event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: err.message }, event.origin);
+        }
       });
-
-      if (!response.ok || !response.body) {
-        event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: "Stream unavailable" }, event.origin);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const chunk = await reader.read();
-        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
-
-        events.forEach((evt) => {
-          const dataLine = evt.split("\n").find((line) => line.startsWith("data: "));
-          if (!dataLine) return;
-          try {
-            const data = JSON.parse(dataLine.slice(6));
-            // Send each parsed result back to localhost
-            event.source.postMessage({ type: "LINK_CHECK_RESULT", requestId, data }, event.origin);
-          } catch (_) {}
-        });
-
-        if (chunk.done) break;
-      }
-
-      event.source.postMessage({ type: "LINK_CHECK_DONE", requestId }, event.origin);
-
-    } catch (err) {
-      event.source.postMessage({ type: "LINK_CHECK_ERROR", requestId, error: err.message }, event.origin);
-    }
-  });
-</script>
+    </script>
 </body>
 </html>
